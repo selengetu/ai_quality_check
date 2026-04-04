@@ -127,24 +127,75 @@ def ingest_raw(**context: Any) -> None:
 
 # ── Task 2: run_dbt ───────────────────────────────────────────────────────────
 
+def _stage_dbt_to_tmp() -> tuple[Path, Path]:
+    """
+    Copy the entire dbt project to /tmp/dbt_run/ and write profiles.yml there.
+
+    macOS Docker mounts (VirtioFS/gRPC-FUSE) trigger OSError Errno 35
+    (Resource deadlock avoided) when dbt reads ANY file from the mounted
+    volume via its internal file loader. Copying to /tmp (container-local
+    filesystem) bypasses this completely.
+
+    Returns (project_dir, profiles_dir) both under /tmp/dbt_run/.
+    """
+    import shutil
+
+    tmp_dbt = Path("/tmp/dbt_run")
+    if tmp_dbt.exists():
+        shutil.rmtree(tmp_dbt)
+
+    shutil.copytree(str(DBT_DIR), str(tmp_dbt))
+    log.info("Copied dbt project from %s to %s", DBT_DIR, tmp_dbt)
+
+    motherduck_token = os.environ.get("MOTHERDUCK_TOKEN", "")
+    dbt_target = os.environ.get("DBT_TARGET", "dev")
+
+    profiles_content = f"""\
+dq_monitor:
+  target: "{dbt_target}"
+  outputs:
+    dev:
+      type: duckdb
+      path: /tmp/dq_monitor.duckdb
+      extensions: [httpfs, parquet]
+      threads: 4
+    prod:
+      type: duckdb
+      path: "md:dq_monitor?motherduck_token={motherduck_token}"
+      extensions: [httpfs, parquet]
+      threads: 4
+"""
+    # Write profiles.yml into the copied project dir (also /tmp — no mount)
+    profiles_path = tmp_dbt / "profiles.yml"
+    profiles_path.write_text(profiles_content)
+    log.info("Wrote profiles.yml to %s (target=%s)", profiles_path, dbt_target)
+
+    return tmp_dbt, tmp_dbt
+
+
 def run_dbt(**context: Any) -> None:
     """
-    Execute `dbt run` followed by `dbt test` inside the dbt project directory.
+    Execute `dbt run` followed by `dbt test`.
 
-    Failures surface as subprocess.CalledProcessError and are caught to trigger
-    the AI diagnosis branch via XCom.
+    Copies the entire dbt project to /tmp before running to avoid macOS
+    Docker volume-mount file locking (OSError Errno 35). All dbt file I/O
+    happens on the container-local filesystem, not the host-mounted volume.
     """
     dbt_target = os.environ.get("DBT_TARGET", "dev")
     log.info("Running dbt with target: %s", dbt_target)
 
+    project_dir, profiles_dir = _stage_dbt_to_tmp()
     failures: list[dict[str, Any]] = []
 
-    for dbt_cmd in [["dbt", "run", "--target", dbt_target],
-                    ["dbt", "test", "--target", dbt_target]]:
+    for dbt_cmd in [
+        ["dbt", "run",  "--target", dbt_target,
+         "--project-dir", str(project_dir), "--profiles-dir", str(profiles_dir)],
+        ["dbt", "test", "--target", dbt_target,
+         "--project-dir", str(project_dir), "--profiles-dir", str(profiles_dir)],
+    ]:
         try:
             result = subprocess.run(
                 dbt_cmd,
-                cwd=str(DBT_DIR),
                 capture_output=True,
                 text=True,
                 check=True,
@@ -157,7 +208,7 @@ def run_dbt(**context: Any) -> None:
                 {
                     "check_name": " ".join(dbt_cmd),
                     "check_type": "dbt",
-                    "error_output": exc.stdout[-3000:],  # last 3 k chars
+                    "error_output": exc.stdout[-3000:],
                     "column_name": "unknown",
                     "failure_rate": 1.0,
                     "sample_bad_rows": [],

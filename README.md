@@ -130,14 +130,16 @@ AIRFLOW_UID=50000
 ### 2. Start all services
 
 ```bash
-docker-compose up --build -d
+docker compose up --build -d
 ```
+
+> **Note:** Modern Docker Desktop ships `compose` as a built-in plugin (`docker compose`), not a standalone binary (`docker-compose`). Use the space form.
 
 First startup takes 3–5 minutes while pip installs run inside the containers.
 
 | Service | URL | Credentials |
 |---|---|---|
-| Airflow UI | http://localhost:8080 | admin / admin |
+| Airflow UI | http://localhost:8088 | admin / admin |
 | Streamlit dashboard | http://localhost:8501 | — |
 
 ### 3. Install dbt packages (local dev only)
@@ -154,7 +156,7 @@ In the Airflow UI, unpause the `dq_monitor` DAG and click **Trigger DAG**. The f
 To run in prod mode (MotherDuck cloud):
 
 ```bash
-docker-compose exec airflow-scheduler \
+docker compose exec airflow-scheduler \
   airflow dags trigger dq_monitor \
   --conf '{"dbt_target": "prod"}'
 ```
@@ -291,11 +293,6 @@ Run ID: scheduled__2024-01-16T06:00:00+00:00
 
 ---
 
-## Resume Bullet
-
-> **AI-Powered Data Quality Monitor** — Built an end-to-end pipeline on Airflow, dbt-DuckDB, and Great Expectations that automatically routes data quality failures to Claude AI for root-cause diagnosis; reduced mean-time-to-diagnose from hours to under 60 seconds, with structured incident reports delivered to Slack and a Streamlit dashboard tracking 30-day failure trends across 13 automated checks on 2.9M daily NYC Taxi records.
-
----
 
 ## Local Dev Without Docker
 
@@ -312,7 +309,7 @@ cd dbt && dbt run --target dev && dbt test --target dev
 python great_expectations/checkpoint.py
 
 # Launch dashboard
-streamlit run dashboard/app.py
+streamlit run dashboard/app.py 
 ```
 
 ---

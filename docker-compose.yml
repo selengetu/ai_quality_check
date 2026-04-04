@@ -1,20 +1,19 @@
-version: "3.9"
-
 x-airflow-common: &airflow-common
-  image: apache/airflow:2.9.1-python3.11
+  build: .                          # uses Dockerfile in repo root
   environment: &airflow-common-env
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
     AIRFLOW__CORE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
     AIRFLOW__CORE__FERNET_KEY: ""
-    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
     AIRFLOW__CORE__LOAD_EXAMPLES: "false"
     AIRFLOW__LOGGING__LOGGING_LEVEL: INFO
     AIRFLOW__API__AUTH_BACKENDS: airflow.api.auth.backend.basic_auth
+    AIRFLOW__SCHEDULER__DAG_DIR_LIST_INTERVAL: "30"
+    AIRFLOW__SCHEDULER__MIN_FILE_PROCESS_INTERVAL: "30"
     PYTHONPATH: /opt/airflow
-    # Forwarded from host .env
     MOTHERDUCK_TOKEN: ${MOTHERDUCK_TOKEN}
     ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
-    SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL}
+    SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:-}
     DBT_TARGET: ${DBT_TARGET:-dev}
   volumes:
     - ./dags:/opt/airflow/dags
@@ -45,20 +44,14 @@ services:
       start_period: 5s
     restart: always
 
-  # ── Airflow Init ─────────────────────────────────────────────────────────────
+  # ── Airflow Init (run once to migrate DB and create admin user) ───────────────
   airflow-init:
     <<: *airflow-common
     entrypoint: /bin/bash
     command:
       - -c
       - |
-        pip install --no-cache-dir \
-          dbt-duckdb==1.8.1 \
-          great-expectations==0.18.19 \
-          anthropic==0.28.0 \
-          duckdb==0.10.3 \
-          requests==2.32.3 && \
-        airflow db migrate && \
+        airflow db migrate &&
         airflow users create \
           --username admin \
           --password admin \
@@ -70,21 +63,15 @@ services:
       <<: *airflow-common-env
       _AIRFLOW_DB_MIGRATE: "true"
       _AIRFLOW_WWW_USER_CREATE: "true"
+    # Init runs as root so it can fix volume ownership, then drops to airflow
     user: "0:0"
 
   # ── Airflow Webserver ─────────────────────────────────────────────────────────
   airflow-webserver:
     <<: *airflow-common
-    command: >
-      bash -c "pip install --no-cache-dir
-        dbt-duckdb==1.8.1
-        great-expectations==0.18.19
-        anthropic==0.28.0
-        duckdb==0.10.3
-        requests==2.32.3 &&
-      airflow webserver"
+    command: webserver
     ports:
-      - "8080:8080"
+      - "8088:8080"
     healthcheck:
       test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
       interval: 30s
@@ -100,14 +87,7 @@ services:
   # ── Airflow Scheduler ────────────────────────────────────────────────────────
   airflow-scheduler:
     <<: *airflow-common
-    command: >
-      bash -c "pip install --no-cache-dir
-        dbt-duckdb==1.8.1
-        great-expectations==0.18.19
-        anthropic==0.28.0
-        duckdb==0.10.3
-        requests==2.32.3 &&
-      airflow scheduler"
+    command: scheduler
     healthcheck:
       test: ["CMD-SHELL", 'airflow jobs check --job-type SchedulerJob --hostname "$${HOSTNAME}"']
       interval: 30s
@@ -126,15 +106,12 @@ services:
     working_dir: /app
     volumes:
       - ./dashboard:/app
+      - ./requirements-dashboard.txt:/requirements-dashboard.txt
     environment:
       MOTHERDUCK_TOKEN: ${MOTHERDUCK_TOKEN}
     command: >
-      bash -c "pip install --no-cache-dir
-        streamlit==1.35.0
-        duckdb==0.10.3
-        pandas==2.2.2
-        plotly==5.22.0 &&
-      streamlit run app.py --server.port=8501 --server.address=0.0.0.0"
+      bash -c "pip install --no-cache-dir -r /requirements-dashboard.txt &&
+               streamlit run app.py --server.port=8501 --server.address=0.0.0.0"
     ports:
       - "8501:8501"
     restart: always
