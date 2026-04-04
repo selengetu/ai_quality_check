@@ -1,0 +1,19 @@
+dq_monitor:
+  target: "{{ env_var('DBT_TARGET', 'dev') }}"
+  outputs:
+
+    dev:
+      type: duckdb
+      path: /tmp/dq_monitor.duckdb
+      extensions:
+        - httpfs
+        - parquet
+      threads: 4
+
+    prod:
+      type: duckdb
+      path: "md:dq_monitor?motherduck_token={{ env_var('MOTHERDUCK_TOKEN') }}"
+      extensions:
+        - httpfs
+        - parquet
+      threads: 4

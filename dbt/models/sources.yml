@@ -1,0 +1,54 @@
+version: 2
+
+sources:
+  - name: raw
+    description: Raw NYC Taxi trip data loaded by the Airflow ingestion task.
+    schema: raw
+    tables:
+      - name: taxi_trips
+        description: >
+          Yellow taxi trip records for January 2024 from the NYC TLC public dataset.
+          Loaded daily via Airflow; one row per trip.
+        columns:
+          - name: VendorID
+            description: TPEP provider that provided the record (1=Creative Mobile, 2=VeriFone).
+          - name: tpep_pickup_datetime
+            description: Date and time the meter was engaged.
+          - name: tpep_dropoff_datetime
+            description: Date and time the meter was disengaged.
+          - name: passenger_count
+            description: Number of passengers in the vehicle (driver-entered value).
+          - name: trip_distance
+            description: Elapsed trip distance in miles reported by the taximeter.
+          - name: RatecodeID
+            description: Final rate code in effect at end of trip.
+          - name: store_and_fwd_flag
+            description: Whether the trip record was held in vehicle memory before sending (Y/N).
+          - name: PULocationID
+            description: TLC Taxi Zone pickup location ID.
+          - name: DOLocationID
+            description: TLC Taxi Zone dropoff location ID.
+          - name: payment_type
+            description: Numeric code for how the passenger paid (1=Credit, 2=Cash, 3=No charge, 4=Dispute).
+          - name: fare_amount
+            description: Time-and-distance fare calculated by the meter.
+          - name: extra
+            description: Miscellaneous extras and surcharges.
+          - name: mta_tax
+            description: MTA tax automatically triggered based on metered rate.
+          - name: tip_amount
+            description: Tip amount (automatically populated for credit card tips; cash tips not included).
+          - name: tolls_amount
+            description: Total amount of all tolls paid in trip.
+          - name: improvement_surcharge
+            description: Improvement surcharge assessed on hailed trips at the flag drop.
+          - name: total_amount
+            description: Total amount charged to passengers (excludes cash tips).
+          - name: congestion_surcharge
+            description: Congestion surcharge for trips in or through Manhattan south of 96th St.
+          - name: airport_fee
+            description: Airport fee for pickups at LaGuardia or JFK.
+          - name: _run_id
+            description: Airflow run ID for the ingestion job that loaded this batch.
+          - name: _loaded_at
+            description: Timestamp when this row was loaded into the raw table.

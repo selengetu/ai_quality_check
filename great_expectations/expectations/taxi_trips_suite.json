@@ -1,0 +1,153 @@
+{
+  "expectation_suite_name": "taxi_trips_suite",
+  "data_asset_type": null,
+  "meta": {
+    "great_expectations_version": "0.18.19",
+    "description": "Core data quality expectations for the NYC Taxi staging table. Covers nullability, value ranges, uniqueness proportions, and row volume. Failures trigger Claude AI diagnosis."
+  },
+  "expectations": [
+    {
+      "expectation_type": "expect_table_row_count_to_be_between",
+      "kwargs": {
+        "min_value": 1000,
+        "max_value": null
+      },
+      "meta": {
+        "notes": "January 2024 should have ~2.9M trips. Floor of 1000 catches a catastrophic load failure or accidental truncation."
+      }
+    },
+    {
+      "expectation_type": "expect_column_values_to_not_be_null",
+      "kwargs": {
+        "column": "pickup_datetime",
+        "mostly": 1.0
+      },
+      "meta": {
+        "notes": "Pickup timestamp is the primary time dimension. Any null here breaks all time-based aggregations."
+      }
+    },
+    {
+      "expectation_type": "expect_column_values_to_not_be_null",
+      "kwargs": {
+        "column": "dropoff_datetime",
+        "mostly": 1.0
+      },
+      "meta": {
+        "notes": "Required for trip duration calculation and mart aggregation."
+      }
+    },
+    {
+      "expectation_type": "expect_column_values_to_not_be_null",
+      "kwargs": {
+        "column": "fare_amount",
+        "mostly": 0.99
+      },
+      "meta": {
+        "notes": "Allows 1% tolerance for edge cases (e.g. comped rides). Higher null rate signals upstream meter system issue."
+      }
+    },
+    {
+      "expectation_type": "expect_column_values_to_not_be_null",
+      "kwargs": {
+        "column": "trip_distance",
+        "mostly": 0.99
+      },
+      "meta": {
+        "notes": "Allows 1% tolerance. Null distance with a valid fare is a known GPS outage pattern."
+      }
+    },
+    {
+      "expectation_type": "expect_column_values_to_not_be_null",
+      "kwargs": {
+        "column": "passenger_count",
+        "mostly": 0.95
+      },
+      "meta": {
+        "notes": "Driver entry — higher null tolerance (5%) is acceptable."
+      }
+    },
+    {
+      "expectation_type": "expect_column_values_to_be_between",
+      "kwargs": {
+        "column": "trip_distance",
+        "min_value": 0,
+        "max_value": 500,
+        "mostly": 0.999
+      },
+      "meta": {
+        "notes": "Max 500 miles covers rare long-haul edge cases (e.g. airport transfer). Values above this are likely meter malfunctions."
+      }
+    },
+    {
+      "expectation_type": "expect_column_values_to_be_between",
+      "kwargs": {
+        "column": "fare_amount",
+        "min_value": 0,
+        "max_value": 1000,
+        "mostly": 0.999
+      },
+      "meta": {
+        "notes": "NYC taxi fare cap is $999 in practice for long-distance. Negative fares are refunds/corrections and should be rare."
+      }
+    },
+    {
+      "expectation_type": "expect_column_values_to_be_between",
+      "kwargs": {
+        "column": "passenger_count",
+        "min_value": 1,
+        "max_value": 6,
+        "mostly": 0.99
+      },
+      "meta": {
+        "notes": "NYC TLC legal maximum is 6 passengers. Values of 0 or >6 indicate data entry errors."
+      }
+    },
+    {
+      "expectation_type": "expect_column_values_to_be_between",
+      "kwargs": {
+        "column": "total_amount",
+        "min_value": 0,
+        "max_value": 2000,
+        "mostly": 0.999
+      },
+      "meta": {
+        "notes": "Total includes tolls and surcharges. Max 2000 covers extreme airport + toll scenarios."
+      }
+    },
+    {
+      "expectation_type": "expect_column_proportion_of_unique_values_to_be_between",
+      "kwargs": {
+        "column": "pickup_datetime",
+        "min_value": 0.01,
+        "max_value": null
+      },
+      "meta": {
+        "notes": "Timestamps should be highly unique. A proportion near 0 means all rows share the same timestamp — a classic bulk-insert bug or a stuck ETL timestamp."
+      }
+    },
+    {
+      "expectation_type": "expect_column_values_to_be_between",
+      "kwargs": {
+        "column": "pickup_location_id",
+        "min_value": 1,
+        "max_value": 265,
+        "mostly": 0.999
+      },
+      "meta": {
+        "notes": "NYC TLC has 263 official zones (IDs 1–265 with gaps). Out-of-range values indicate a mapping error in the upstream dispatch system."
+      }
+    },
+    {
+      "expectation_type": "expect_column_values_to_be_between",
+      "kwargs": {
+        "column": "dropoff_location_id",
+        "min_value": 1,
+        "max_value": 265,
+        "mostly": 0.999
+      },
+      "meta": {
+        "notes": "Same zone ID constraint as pickup_location_id."
+      }
+    }
+  ]
+}

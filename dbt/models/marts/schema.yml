@@ -1,0 +1,59 @@
+version: 2
+
+models:
+  - name: mart_daily_trips
+    description: >
+      Daily aggregated NYC Taxi metrics. Grain: one row per pickup calendar date.
+      Includes embedded DQ signals (null_fare_pct, null_distance_pct) computed
+      against the raw source so upstream data quality regressions are visible
+      even after staging filters clean rows out.
+    columns:
+      - name: trip_date
+        description: Calendar date of pickups (grain column).
+        tests:
+          - not_null
+          - unique
+
+      - name: total_trips
+        description: Count of valid trips on this date.
+        tests:
+          - not_null
+          - dbt_utils.expression_is_true:
+              expression: "> 0"
+
+      - name: avg_fare
+        description: Mean fare amount across all trips on this date.
+        tests:
+          - not_null
+
+      - name: p95_fare
+        description: 95th-percentile fare — outlier signal. A spike here triggers AI diagnosis.
+        tests:
+          - not_null
+
+      - name: avg_distance
+        description: Mean trip distance in miles.
+        tests:
+          - not_null
+
+      - name: p95_distance
+        description: 95th-percentile trip distance — outlier signal.
+        tests:
+          - not_null
+
+      - name: null_fare_pct
+        description: >
+          Fraction of raw rows where fare_amount was null. Non-zero values indicate
+          upstream data quality degradation; triggers AI incident if above threshold.
+        tests:
+          - not_null
+
+      - name: null_distance_pct
+        description: Fraction of raw rows where trip_distance was null.
+        tests:
+          - not_null
+
+      - name: dbt_updated_at
+        description: Timestamp this mart row was last computed.
+        tests:
+          - not_null

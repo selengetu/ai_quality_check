@@ -1,0 +1,145 @@
+version: "3.9"
+
+x-airflow-common: &airflow-common
+  image: apache/airflow:2.9.1-python3.11
+  environment: &airflow-common-env
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__CORE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+    AIRFLOW__CORE__FERNET_KEY: ""
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__LOGGING__LOGGING_LEVEL: INFO
+    AIRFLOW__API__AUTH_BACKENDS: airflow.api.auth.backend.basic_auth
+    PYTHONPATH: /opt/airflow
+    # Forwarded from host .env
+    MOTHERDUCK_TOKEN: ${MOTHERDUCK_TOKEN}
+    ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+    SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL}
+    DBT_TARGET: ${DBT_TARGET:-dev}
+  volumes:
+    - ./dags:/opt/airflow/dags
+    - ./dbt:/opt/airflow/dbt
+    - ./great_expectations:/opt/airflow/great_expectations
+    - ./ai_engine:/opt/airflow/ai_engine
+    - airflow-logs:/opt/airflow/logs
+    - airflow-plugins:/opt/airflow/plugins
+  user: "${AIRFLOW_UID:-50000}:0"
+  depends_on: &airflow-common-depends-on
+    postgres:
+      condition: service_healthy
+
+services:
+  # ── Metadata DB ──────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - postgres-db-volume:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 10s
+      retries: 5
+      start_period: 5s
+    restart: always
+
+  # ── Airflow Init ─────────────────────────────────────────────────────────────
+  airflow-init:
+    <<: *airflow-common
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        pip install --no-cache-dir \
+          dbt-duckdb==1.8.1 \
+          great-expectations==0.18.19 \
+          anthropic==0.28.0 \
+          duckdb==0.10.3 \
+          requests==2.32.3 && \
+        airflow db migrate && \
+        airflow users create \
+          --username admin \
+          --password admin \
+          --firstname Admin \
+          --lastname User \
+          --role Admin \
+          --email admin@example.com
+    environment:
+      <<: *airflow-common-env
+      _AIRFLOW_DB_MIGRATE: "true"
+      _AIRFLOW_WWW_USER_CREATE: "true"
+    user: "0:0"
+
+  # ── Airflow Webserver ─────────────────────────────────────────────────────────
+  airflow-webserver:
+    <<: *airflow-common
+    command: >
+      bash -c "pip install --no-cache-dir
+        dbt-duckdb==1.8.1
+        great-expectations==0.18.19
+        anthropic==0.28.0
+        duckdb==0.10.3
+        requests==2.32.3 &&
+      airflow webserver"
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: always
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  # ── Airflow Scheduler ────────────────────────────────────────────────────────
+  airflow-scheduler:
+    <<: *airflow-common
+    command: >
+      bash -c "pip install --no-cache-dir
+        dbt-duckdb==1.8.1
+        great-expectations==0.18.19
+        anthropic==0.28.0
+        duckdb==0.10.3
+        requests==2.32.3 &&
+      airflow scheduler"
+    healthcheck:
+      test: ["CMD-SHELL", 'airflow jobs check --job-type SchedulerJob --hostname "$${HOSTNAME}"']
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: always
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  # ── Streamlit Dashboard ──────────────────────────────────────────────────────
+  streamlit:
+    image: python:3.11-slim
+    working_dir: /app
+    volumes:
+      - ./dashboard:/app
+    environment:
+      MOTHERDUCK_TOKEN: ${MOTHERDUCK_TOKEN}
+    command: >
+      bash -c "pip install --no-cache-dir
+        streamlit==1.35.0
+        duckdb==0.10.3
+        pandas==2.2.2
+        plotly==5.22.0 &&
+      streamlit run app.py --server.port=8501 --server.address=0.0.0.0"
+    ports:
+      - "8501:8501"
+    restart: always
+
+volumes:
+  postgres-db-volume:
+  airflow-logs:
+  airflow-plugins:

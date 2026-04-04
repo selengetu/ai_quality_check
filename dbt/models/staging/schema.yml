@@ -1,0 +1,75 @@
+version: 2
+
+models:
+  - name: stg_taxi_trips
+    description: >
+      Cleaned and typed NYC Yellow Taxi trips. Rows with null critical fields
+      or non-positive fares are excluded. One row per trip.
+    columns:
+      - name: vendor_id
+        description: TPEP provider (1=Creative Mobile Technologies, 2=VeriFone Inc).
+        tests:
+          - not_null
+          - accepted_values:
+              values: [1, 2]
+
+      - name: pickup_datetime
+        description: Timestamp when the meter was engaged.
+        tests:
+          - not_null
+
+      - name: dropoff_datetime
+        description: Timestamp when the meter was disengaged.
+        tests:
+          - not_null
+
+      - name: passenger_count
+        description: Number of passengers (driver-entered).
+        tests:
+          - not_null
+          - accepted_values:
+              values: [1, 2, 3, 4, 5, 6]
+              quote: false
+
+      - name: trip_distance
+        description: Trip distance in miles as reported by the taximeter.
+        tests:
+          - not_null
+          - dbt_utils.expression_is_true:
+              expression: ">= 0"
+
+      - name: fare_amount
+        description: Time-and-distance fare calculated by the meter (must be > 0 after staging filter).
+        tests:
+          - not_null
+          - positive_fare_amount
+
+      - name: rate_code_id
+        description: Final rate code (1=Standard, 2=JFK, 3=Newark, 4=Nassau/Westchester, 5=Negotiated, 6=Group ride).
+        tests:
+          - accepted_values:
+              values: [1, 2, 3, 4, 5, 6]
+              quote: false
+
+      - name: payment_type
+        description: Payment method code.
+        tests:
+          - not_null
+          - accepted_values:
+              values: [1, 2, 3, 4, 5, 6]
+              quote: false
+
+      - name: pickup_location_id
+        description: TLC Taxi Zone ID for pickup.
+        tests:
+          - not_null
+
+      - name: dropoff_location_id
+        description: TLC Taxi Zone ID for dropoff.
+        tests:
+          - not_null
+
+      - name: dq_loaded_at
+        description: Timestamp this row was processed by the staging model.
+        tests:
+          - not_null

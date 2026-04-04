@@ -1,0 +1,40 @@
+# Secrets
+.env
+*.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+dist/
+build/
+*.egg-info/
+
+# DuckDB local files
+*.duckdb
+*.duckdb.wal
+
+# dbt
+dbt/target/
+dbt/dbt_packages/
+dbt/logs/
+
+# Great Expectations
+great_expectations/uncommitted/
+great_expectations/.ge_store_backend_id
+
+# Airflow
+logs/
+airflow.db
+
+# Parquet temp files
+*.parquet
+
+# macOS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
