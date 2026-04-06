@@ -29,17 +29,18 @@ DBT_MODELS_DIR = _REPO_ROOT / "dbt" / "models"
 # ── Connection ────────────────────────────────────────────────────────────────
 MOTHERDUCK_TOKEN = os.environ.get("MOTHERDUCK_TOKEN", "")
 MD_DATABASE = "dq_monitor"
+LOCAL_INCIDENTS_DB = "/tmp/dq_incidents.duckdb"  # separate file from dbt db
 
 
 def _get_conn():
-    """Return a DuckDB connection (MotherDuck if token present, else local)."""
+    """Return a DuckDB connection to the incidents store."""
     import duckdb
 
     if MOTHERDUCK_TOKEN:
         return duckdb.connect(
             f"md:{MD_DATABASE}?motherduck_token={MOTHERDUCK_TOKEN}"
         )
-    return duckdb.connect("/tmp/dq_monitor.duckdb")
+    return duckdb.connect(LOCAL_INCIDENTS_DB)
 
 
 # ── SQL reader ────────────────────────────────────────────────────────────────

@@ -15,13 +15,14 @@ x-airflow-common: &airflow-common
     ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
     SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:-}
     DBT_TARGET: ${DBT_TARGET:-dev}
+    INCIDENTS_JSON: /tmp/incidents/dq_incidents.json
   volumes:
-    - ./dags:/opt/airflow/dags
-    - ./dbt:/opt/airflow/dbt
-    - ./great_expectations:/opt/airflow/great_expectations
-    - ./ai_engine:/opt/airflow/ai_engine
+    - ./dags:/opt/airflow/dags        # live-reload DAG changes without rebuild
     - airflow-logs:/opt/airflow/logs
     - airflow-plugins:/opt/airflow/plugins
+    - incidents-data:/tmp/incidents   # shared with Streamlit for JSON sidecar
+    # dbt, ai_engine, great_expectations are baked into the image (Dockerfile)
+    # to avoid macOS VirtioFS Errno 35 deadlocks on mounted volumes.
   user: "${AIRFLOW_UID:-50000}:0"
   depends_on: &airflow-common-depends-on
     postgres:
@@ -107,8 +108,10 @@ services:
     volumes:
       - ./dashboard:/app
       - ./requirements-dashboard.txt:/requirements-dashboard.txt
+      - incidents-data:/tmp/incidents  # read incidents JSON written by Airflow
     environment:
       MOTHERDUCK_TOKEN: ${MOTHERDUCK_TOKEN}
+      INCIDENTS_JSON: /tmp/incidents/dq_incidents.json
     command: >
       bash -c "pip install --no-cache-dir -r /requirements-dashboard.txt &&
                streamlit run app.py --server.port=8501 --server.address=0.0.0.0"
@@ -120,3 +123,4 @@ volumes:
   postgres-db-volume:
   airflow-logs:
   airflow-plugins:
+  incidents-data:    # shared between Airflow and Streamlit

@@ -19,7 +19,15 @@ raw_counts AS (
         COUNT(*)                                    AS raw_total,
         SUM(CASE WHEN fare_amount   IS NULL THEN 1 ELSE 0 END) AS null_fare_count,
         SUM(CASE WHEN trip_distance IS NULL THEN 1 ELSE 0 END) AS null_distance_count
-    FROM {{ source('raw', 'taxi_trips') }}
+    FROM (
+        {% if target.name == 'prod' %}
+            SELECT * FROM {{ source('raw', 'taxi_trips') }}
+        {% else %}
+            SELECT * FROM read_parquet(
+                'https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_2024-01.parquet'
+            )
+        {% endif %}
+    )
     GROUP BY 1
 ),
 

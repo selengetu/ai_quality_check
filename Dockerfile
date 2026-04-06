@@ -13,3 +13,11 @@ RUN pip install --no-cache-dir -r /requirements.txt
 COPY --chown=airflow:root dbt/             /opt/airflow/dbt/
 COPY --chown=airflow:root ai_engine/       /opt/airflow/ai_engine/
 COPY --chown=airflow:root great_expectations/ /opt/airflow/great_expectations/
+
+# Pre-install dbt packages (dbt_utils) so tasks don't need network access at runtime
+RUN cd /opt/airflow/dbt && dbt deps --profiles-dir /opt/airflow/dbt
+
+# Create shared incidents directory with correct ownership
+USER root
+RUN mkdir -p /tmp/incidents && chmod 777 /tmp/incidents
+USER airflow

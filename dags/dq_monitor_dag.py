@@ -47,7 +47,7 @@ GE_DIR = Path("/opt/airflow/great_expectations")
 default_args: dict[str, Any] = {
     "owner": "data-engineering",
     "retries": 1,
-    "retry_delay": timedelta(minutes=5),
+    "retry_delay": timedelta(minutes=1),
     "email_on_failure": False,
 }
 
@@ -80,22 +80,51 @@ def _get_conn(use_motherduck: bool = True):
 
 def ingest_raw(**context: Any) -> None:
     """
-    Download the NYC Taxi parquet file and load it into the raw schema.
+    Validate source data availability and record row count.
 
-    Uses a temp file to avoid persisting the ~500 MB parquet locally.
-    Replaces the table on each run (idempotent via CREATE OR REPLACE).
+    In dev: reads directly from S3 via DuckDB httpfs (same as dbt does) —
+    avoids CloudFront 403s that urllib gets due to missing browser headers.
+    In prod: loads into MotherDuck raw schema for dbt to consume.
     """
-    import urllib.request
+    import duckdb
 
     run_id: str = context["run_id"]
-    log.info("Run ID: %s — starting raw ingestion", run_id)
+    dbt_target = os.environ.get("DBT_TARGET", "dev")
+    log.info("Run ID: %s — ingest_raw (target=%s)", run_id, dbt_target)
 
+    if dbt_target != "prod":
+        # Dev: validate source reachability via DuckDB httpfs (same as dbt uses).
+        # DuckDB's httpfs sends proper headers that bypass CloudFront restrictions
+        # that block plain urllib/requests from Docker container IPs.
+        try:
+            conn = duckdb.connect(":memory:")
+            conn.execute("INSTALL httpfs; LOAD httpfs; INSTALL parquet; LOAD parquet;")
+            # Sample just 1000 rows for a fast check — not a full download
+            row_count = conn.execute(
+                f"SELECT COUNT(*) FROM read_parquet('{TAXI_S3_URL}') LIMIT 1000"
+            ).fetchone()[0]
+            conn.close()
+            log.info("Dev source validated: %d sample rows from %s", row_count, TAXI_S3_URL)
+            context["ti"].xcom_push(key="raw_row_count", value=row_count)
+        except Exception as exc:
+            log.warning("Dev source validation failed (non-fatal): %s", exc)
+            # Don't fail the task — dbt will surface the error if data is truly unavailable
+            context["ti"].xcom_push(key="raw_row_count", value=0)
+        return
+
+    # Prod: load into MotherDuck raw schema
     with tempfile.NamedTemporaryFile(suffix=".parquet", delete=False) as tmp:
         tmp_path = tmp.name
 
     try:
+        import requests as req
         log.info("Downloading taxi data from: %s", TAXI_S3_URL)
-        urllib.request.urlretrieve(TAXI_S3_URL, tmp_path)  # noqa: S310
+        resp = req.get(TAXI_S3_URL, stream=True, timeout=120,
+                       headers={"User-Agent": "Mozilla/5.0"})
+        resp.raise_for_status()
+        with open(tmp_path, "wb") as f:
+            for chunk in resp.iter_content(chunk_size=8192):
+                f.write(chunk)
         log.info("Download complete: %s", tmp_path)
 
         conn = _get_conn()
@@ -104,17 +133,12 @@ def ingest_raw(**context: Any) -> None:
             conn.execute(
                 f"""
                 CREATE OR REPLACE TABLE {RAW_TABLE} AS
-                SELECT
-                    *,
-                    '{run_id}' AS _run_id,
-                    NOW()       AS _loaded_at
+                SELECT *, '{run_id}' AS _run_id, NOW() AS _loaded_at
                 FROM read_parquet('{tmp_path}')
                 """
             )
             row_count = conn.execute(f"SELECT COUNT(*) FROM {RAW_TABLE}").fetchone()[0]
             log.info("Loaded %d rows into %s", row_count, RAW_TABLE)
-
-            # Push row count to XCom for downstream tasks
             context["ti"].xcom_push(key="raw_row_count", value=row_count)
         finally:
             conn.close()
@@ -127,30 +151,18 @@ def ingest_raw(**context: Any) -> None:
 
 # ── Task 2: run_dbt ───────────────────────────────────────────────────────────
 
-def _stage_dbt_to_tmp() -> tuple[Path, Path]:
+def _write_profiles() -> Path:
     """
-    Copy the entire dbt project to /tmp/dbt_run/ and write profiles.yml there.
+    Write profiles.yml to /tmp/dbt_profiles/ at task runtime.
 
-    macOS Docker mounts (VirtioFS/gRPC-FUSE) trigger OSError Errno 35
-    (Resource deadlock avoided) when dbt reads ANY file from the mounted
-    volume via its internal file loader. Copying to /tmp (container-local
-    filesystem) bypasses this completely.
-
-    Returns (project_dir, profiles_dir) both under /tmp/dbt_run/.
+    profiles.yml contains a secret (MOTHERDUCK_TOKEN) so it is never baked
+    into the image — it is generated fresh each run from the environment.
+    Returns the profiles dir path.
     """
-    import shutil
-
-    tmp_dbt = Path("/tmp/dbt_run")
-    if tmp_dbt.exists():
-        shutil.rmtree(tmp_dbt)
-
-    shutil.copytree(str(DBT_DIR), str(tmp_dbt))
-    log.info("Copied dbt project from %s to %s", DBT_DIR, tmp_dbt)
-
     motherduck_token = os.environ.get("MOTHERDUCK_TOKEN", "")
     dbt_target = os.environ.get("DBT_TARGET", "dev")
 
-    profiles_content = f"""\
+    content = f"""\
 dq_monitor:
   target: "{dbt_target}"
   outputs:
@@ -165,37 +177,36 @@ dq_monitor:
       extensions: [httpfs, parquet]
       threads: 4
 """
-    # Write profiles.yml into the copied project dir (also /tmp — no mount)
-    profiles_path = tmp_dbt / "profiles.yml"
-    profiles_path.write_text(profiles_content)
-    log.info("Wrote profiles.yml to %s (target=%s)", profiles_path, dbt_target)
-
-    return tmp_dbt, tmp_dbt
+    profiles_dir = Path("/tmp/dbt_profiles")
+    profiles_dir.mkdir(exist_ok=True)
+    (profiles_dir / "profiles.yml").write_text(content)
+    log.info("Wrote profiles.yml to %s (target=%s)", profiles_dir, dbt_target)
+    return profiles_dir
 
 
 def run_dbt(**context: Any) -> None:
     """
     Execute `dbt run` followed by `dbt test`.
 
-    Copies the entire dbt project to /tmp before running to avoid macOS
-    Docker volume-mount file locking (OSError Errno 35). All dbt file I/O
-    happens on the container-local filesystem, not the host-mounted volume.
+    dbt project files are baked into the image at /opt/airflow/dbt/ (see
+    Dockerfile) so they live on the container overlay filesystem, not the
+    host-mounted VirtioFS volume. profiles.yml is written to /tmp at runtime
+    since it contains secrets and must not be in the image.
     """
     dbt_target = os.environ.get("DBT_TARGET", "dev")
     log.info("Running dbt with target: %s", dbt_target)
 
-    project_dir, profiles_dir = _stage_dbt_to_tmp()
+    profiles_dir = _write_profiles()
     failures: list[dict[str, Any]] = []
 
     for dbt_cmd in [
-        ["dbt", "run",  "--target", dbt_target,
-         "--project-dir", str(project_dir), "--profiles-dir", str(profiles_dir)],
-        ["dbt", "test", "--target", dbt_target,
-         "--project-dir", str(project_dir), "--profiles-dir", str(profiles_dir)],
+        ["dbt", "run",  "--target", dbt_target, "--profiles-dir", str(profiles_dir)],
+        ["dbt", "test", "--target", dbt_target, "--profiles-dir", str(profiles_dir)],
     ]:
         try:
             result = subprocess.run(
                 dbt_cmd,
+                cwd=str(DBT_DIR),
                 capture_output=True,
                 text=True,
                 check=True,

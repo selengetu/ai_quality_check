@@ -2,7 +2,10 @@ version: 2
 
 sources:
   - name: raw
-    description: Raw NYC Taxi trip data loaded by the Airflow ingestion task.
+    description: >
+      Raw NYC Taxi trip data. In dev, read directly from the parquet file via
+      DuckDB httpfs (no intermediate table needed). In prod, loaded into
+      MotherDuck raw schema by the Airflow ingestion task.
     schema: raw
     tables:
       - name: taxi_trips

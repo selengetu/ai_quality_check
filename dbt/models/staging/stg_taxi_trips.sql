@@ -9,8 +9,20 @@
 --   - Filter out obviously corrupt fares (fare_amount <= 0)
 --   - Add dq_loaded_at audit column
 
+-- Read raw data. In dev: directly from S3 parquet via httpfs (no raw table needed).
+-- In prod: from the MotherDuck raw.taxi_trips table loaded by Airflow ingest_raw.
 WITH source AS (
-    SELECT * FROM {{ source('raw', 'taxi_trips') }}
+    {% if target.name == 'prod' %}
+        SELECT * FROM {{ source('raw', 'taxi_trips') }}
+    {% else %}
+        SELECT
+            *,
+            'dev-direct' AS _run_id,
+            NOW()        AS _loaded_at
+        FROM read_parquet(
+            'https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_2024-01.parquet'
+        )
+    {% endif %}
 ),
 
 cast_and_rename AS (

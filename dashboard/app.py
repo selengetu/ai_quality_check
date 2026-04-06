@@ -12,6 +12,7 @@ Run locally:
 
 from __future__ import annotations
 
+import json
 import os
 from datetime import date, timedelta
 from typing import Any
@@ -34,6 +35,7 @@ st.set_page_config(
 MOTHERDUCK_TOKEN = os.environ.get("MOTHERDUCK_TOKEN", "")
 MD_DATABASE = "dq_monitor"
 LOCAL_DB = "/tmp/dq_monitor.duckdb"
+INCIDENTS_JSON = os.environ.get("INCIDENTS_JSON", "/tmp/incidents/dq_incidents.json")
 
 SEVERITY_COLORS = {
     "critical": "#FF4B4B",
@@ -85,53 +87,58 @@ def get_connection() -> duckdb.DuckDBPyConnection:
 @st.cache_data(ttl=60, show_spinner="Loading incidents...")
 def load_incidents() -> pd.DataFrame:
     """
-    Load all rows from the incidents table.
+    Load incidents from the JSON sidecar file (dev) or MotherDuck (prod).
 
-    Returns an empty DataFrame with the correct schema if the table doesn't
-    exist yet (first run before any failures have occurred).
+    The JSON file is written by ai_engine/alerting.py as newline-delimited
+    JSON — one incident object per line. It requires no locking so Streamlit
+    can read it safely even while Airflow tasks are writing.
     """
-    _schema = {
-        "incident_id": pd.StringDtype(),
-        "run_id": pd.StringDtype(),
-        "check_name": pd.StringDtype(),
-        "check_type": pd.StringDtype(),
-        "column_name": pd.StringDtype(),
-        "failure_rate": float,
-        "root_cause": pd.StringDtype(),
-        "confidence": pd.StringDtype(),
-        "suggested_fix": pd.StringDtype(),
-        "severity": pd.StringDtype(),
-        "needs_human_review": bool,
-        "created_at": "datetime64[ns]",
-    }
+    empty_cols = [
+        "incident_id", "run_id", "check_name", "check_type", "column_name",
+        "failure_rate", "failure_rate_pct", "root_cause", "confidence",
+        "suggested_fix", "severity", "needs_human_review", "created_at",
+    ]
+
+    # Prod: read from MotherDuck
+    if MOTHERDUCK_TOKEN:
+        try:
+            conn = get_connection()
+            df = conn.execute(
+                """
+                SELECT
+                    incident_id, run_id, check_name, check_type, column_name,
+                    ROUND(failure_rate * 100, 2) AS failure_rate_pct,
+                    failure_rate, root_cause, confidence, suggested_fix,
+                    severity, needs_human_review, created_at
+                FROM incidents
+                ORDER BY created_at DESC
+                """
+            ).df()
+            df["created_at"] = pd.to_datetime(df["created_at"])
+            return df
+        except Exception:
+            return pd.DataFrame(columns=empty_cols)
+
+    # Dev: read from JSON sidecar (no DuckDB locking issues)
+    if not os.path.exists(INCIDENTS_JSON):
+        return pd.DataFrame(columns=empty_cols)
 
     try:
-        conn = get_connection()
-        df = conn.execute(
-            """
-            SELECT
-                incident_id,
-                run_id,
-                check_name,
-                check_type,
-                column_name,
-                ROUND(failure_rate * 100, 2)  AS failure_rate_pct,
-                failure_rate,
-                root_cause,
-                confidence,
-                suggested_fix,
-                severity,
-                needs_human_review,
-                created_at
-            FROM incidents
-            ORDER BY created_at DESC
-            """
-        ).df()
-        df["created_at"] = pd.to_datetime(df["created_at"])
+        rows = []
+        with open(INCIDENTS_JSON) as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    rows.append(json.loads(line))
+        if not rows:
+            return pd.DataFrame(columns=empty_cols)
+        df = pd.DataFrame(rows)
+        df["created_at"] = pd.to_datetime(df["created_at"], utc=True)
+        df = df.sort_values("created_at", ascending=False).reset_index(drop=True)
         return df
-    except Exception:
-        # Table doesn't exist yet
-        return pd.DataFrame(columns=list(_schema.keys()) + ["failure_rate_pct"])
+    except Exception as exc:
+        st.warning(f"Could not load incidents: {exc}")
+        return pd.DataFrame(columns=empty_cols)
 
 
 # ── Sidebar filters ───────────────────────────────────────────────────────────

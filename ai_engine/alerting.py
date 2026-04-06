@@ -26,6 +26,8 @@ log = logging.getLogger(__name__)
 SLACK_WEBHOOK_URL = os.environ.get("SLACK_WEBHOOK_URL", "")
 MOTHERDUCK_TOKEN = os.environ.get("MOTHERDUCK_TOKEN", "")
 MD_DATABASE = "dq_monitor"
+LOCAL_INCIDENTS_DB = "/tmp/dq_incidents.duckdb"  # separate file from dbt db
+INCIDENTS_JSON = os.environ.get("INCIDENTS_JSON", "/tmp/incidents/dq_incidents.json")
 DASHBOARD_URL = os.environ.get("DASHBOARD_URL", "http://localhost:8501")
 
 # Slack severity → emoji mapping
@@ -51,7 +53,7 @@ def _get_conn():
         return duckdb.connect(
             f"md:{MD_DATABASE}?motherduck_token={MOTHERDUCK_TOKEN}"
         )
-    return duckdb.connect("/tmp/dq_monitor.duckdb")
+    return duckdb.connect(LOCAL_INCIDENTS_DB)
 
 
 # ── Incidents table bootstrap ─────────────────────────────────────────────────
@@ -187,10 +189,13 @@ def send_alert(
     incident_id = str(uuid.uuid4())
     created_at = datetime.now(timezone.utc)
 
-    # 1. Persist to MotherDuck (do this first — Slack is nice-to-have)
+    # 1. Persist to DuckDB/MotherDuck
     _write_incident(ctx, diagnosis, incident_id, run_id, created_at)
 
-    # 2. Send Slack alert
+    # 2. Append to JSON sidecar (lock-free, readable by Streamlit)
+    _append_incident_json(ctx, diagnosis, incident_id, run_id, created_at)
+
+    # 3. Send Slack alert
     _send_slack(ctx, diagnosis, incident_id, run_id)
 
     return incident_id
@@ -235,6 +240,43 @@ def _write_incident(
         log.error("Failed to write incident to MotherDuck: %s", exc)
     finally:
         conn.close()
+
+
+def _append_incident_json(
+    ctx: dict[str, Any],
+    diagnosis: dict[str, Any],
+    incident_id: str,
+    run_id: str,
+    created_at: datetime,
+) -> None:
+    """
+    Append the incident as a JSON line to INCIDENTS_JSON.
+
+    Uses a newline-delimited JSON file (one object per line) which is
+    append-only and requires no locking — safe for concurrent Streamlit reads.
+    """
+    record = {
+        "incident_id": incident_id,
+        "run_id": run_id,
+        "check_name": ctx.get("check_name", ""),
+        "check_type": ctx.get("check_type", ""),
+        "column_name": ctx.get("column_name", ""),
+        "failure_rate": ctx.get("failure_rate", 0.0),
+        "failure_rate_pct": round(ctx.get("failure_rate", 0.0) * 100, 2),
+        "root_cause": diagnosis.get("root_cause", ""),
+        "confidence": diagnosis.get("confidence", "low"),
+        "suggested_fix": diagnosis.get("suggested_fix", ""),
+        "severity": diagnosis.get("severity", "warning"),
+        "needs_human_review": diagnosis.get("needs_human_review", True),
+        "created_at": created_at.isoformat(),
+    }
+    try:
+        os.makedirs(os.path.dirname(INCIDENTS_JSON), exist_ok=True)
+        with open(INCIDENTS_JSON, "a") as f:
+            f.write(json.dumps(record) + "\n")
+        log.info("Incident %s appended to %s", incident_id, INCIDENTS_JSON)
+    except Exception as exc:
+        log.error("Failed to write incident JSON: %s", exc)
 
 
 def _send_slack(
